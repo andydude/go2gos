@@ -30,7 +30,9 @@ func compile(filename string) {
 	// find guile
 	guile, err := exec.LookPath("guile")
 	if err != nil {
-		panic(err)
+		NewCompiler().Compile(rd, os.Stdout)
+		rd.Close()
+		return
 	}
 
 	// pretty-print
@@ -44,8 +46,7 @@ func compile(filename string) {
 	}
 
 	// compile to pipe
-	c := NewCompiler()
-	c.Compile(rd, pr)
+	NewCompiler().Compile(rd, pr)
 	err = cmd.Run()
 	if err != nil {
 		panic(err)
