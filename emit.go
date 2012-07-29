@@ -98,7 +98,36 @@ func (c *Compiler) emitCallExpr(node *ast.CallExpr) {
 	c.emit(")")
 }
 
-// CaseClause
+func (c *Compiler) emitCaseClause(node *ast.CaseClause, cond bool) {
+	if node.List == nil || len(node.List) == 0 {
+		c.emit("(else ")
+		for _, stmt := range node.Body {
+			c.emit(" ")
+			c.emitStmt(stmt)
+		}
+		c.emit(")")
+		return
+	}
+	c.emit("(")
+	if cond {
+		c.emitExpr(node.List[0])
+	} else {
+		sep := "("
+		for _, expr := range node.List {
+			c.emit(sep)
+			c.emitExpr(expr)
+			sep = " "
+		}
+		c.emit(")")
+	} 
+	c.emit(" ")
+	for _, stmt := range node.Body {
+		c.emit(" ")
+		c.emitStmt(stmt)
+	}
+	c.emit(")")
+}
+
 // ChanDir
 
 func (c *Compiler) emitChanType(node *ast.ChanType) {
@@ -113,7 +142,21 @@ func (c *Compiler) emitChanType(node *ast.ChanType) {
 	c.emit(")")
 }
 
-// CommClause
+func (c *Compiler) emitCommClause(node *ast.CommClause) {
+	if node.Comm == nil {
+		c.emit("(else")
+	} else {
+		c.emit("(")
+		c.emitStmt(node.Comm)
+	}
+	if node.Body != nil {
+		for _, stmt := range node.Body {
+			c.emit(" ")
+			c.emitStmt(stmt)
+		}
+	}
+	c.emit(")")
+}
 
 func (c *Compiler) emitComment(node *ast.Comment) {
 }
@@ -148,11 +191,6 @@ func (c *Compiler) emitDeferStmt(node *ast.DeferStmt) {
 	c.emit(")")
 }
 
-func (c *Compiler) emitEllipsis(node *ast.Ellipsis) {
-	c.emit("... ")
-	c.emitExpr(node.Elt)
-}
-
 func (c *Compiler) emitEmptyStmt(node *ast.EmptyStmt) {
 	c.emit("(void)")
 }
@@ -161,7 +199,7 @@ func (c *Compiler) emitExpr(node ast.Expr) {
 	switch a := node.(type) {
 	case *ast.BasicLit:       c.emitBasicLit(a)
 	case *ast.CompositeLit:   c.emitCompositeLit(a)
-	case *ast.Ellipsis:       c.emitEllipsis(a)
+	case *ast.Ellipsis:       c.emitExpr(a.Elt)
 	case *ast.Ident:          c.emit(a.Name)
 
 	// Expr
@@ -257,11 +295,23 @@ func (c *Compiler) emitForStmt(node *ast.ForStmt) {
 }
 
 func (c *Compiler) emitFuncDecl(node *ast.FuncDecl) {
+	ellipsis := false
+	if pars := node.Type.Params.List;
+	   pars != nil && len(pars) > 0 {
+		last := pars[len(pars) - 1]
+		if _, ok := last.Type.(*ast.Ellipsis); ok {
+			ellipsis = true
+		}
+	}
 	// "(define-func (%s %s) %s)", name, type, body
+	c.emit("(define-func")
+	if ellipsis {
+		c.emit("...")
+	}
 	if node.Recv == nil {
-		c.emit("(define-func (%s ", node.Name.Name)
+		c.emit(" (%s ", node.Name.Name)
 	} else {
-		c.emit("(define-func (")
+		c.emit(" (")
 		c.emitFieldList(node.Recv)
 		c.emit(" %s ", node.Name.Name)
 	}
@@ -467,28 +517,11 @@ func (c *Compiler) emitReturnStmt(node *ast.ReturnStmt) {
 
 // Scope
 
-// helper function
-func (c *Compiler) emitSelectCommClause(node *ast.CommClause) {
-	if node.Comm == nil {
-		c.emit("(else")
-	} else {
-		c.emit("(")
-		c.emitStmt(node.Comm)
-	}
-	if node.Body != nil {
-		for _, stmt := range node.Body {
-			c.emit(" ")
-			c.emitStmt(stmt)
-		}
-	}
-	c.emit(")")
-}
-
 func (c *Compiler) emitSelectStmt(node *ast.SelectStmt) {
 	c.emit("(comm!")
 	for _, stmt := range node.Body.List {
 		c.emit(" ")
-		c.emitSelectCommClause(stmt.(*ast.CommClause))
+		c.emitCommClause(stmt.(*ast.CommClause))
 	}
 	c.emit(")")
 }
@@ -580,37 +613,6 @@ func (c *Compiler) emitStructType(node *ast.StructType) {
 	c.emit(")")
 }
 
-// helper function
-func (c *Compiler) emitSwitchCaseClause(node *ast.CaseClause, cond bool) {
-	if node.List == nil || len(node.List) == 0 {
-		c.emit("(else ")
-		for _, stmt := range node.Body {
-			c.emit(" ")
-			c.emitStmt(stmt)
-		}
-		c.emit(")")
-		return
-	}
-	c.emit("(")
-	if cond {
-		c.emitExpr(node.List[0])
-	} else {
-		sep := "("
-		for _, expr := range node.List {
-			c.emit(sep)
-			c.emitExpr(expr)
-			sep = " "
-		}
-		c.emit(")")
-	} 
-	c.emit(" ")
-	for _, stmt := range node.Body {
-		c.emit(" ")
-		c.emitStmt(stmt)
-	}
-	c.emit(")")
-}
-
 func (c *Compiler) emitSwitchStmt(node *ast.SwitchStmt) {
 	cond := node.Tag == nil
 	if cond {
@@ -628,7 +630,7 @@ func (c *Compiler) emitSwitchStmt(node *ast.SwitchStmt) {
 	}
 	for _, stmt := range node.Body.List {
 		c.emit(" ")
-		c.emitSwitchCaseClause(stmt.(*ast.CaseClause), cond)
+		c.emitCaseClause(stmt.(*ast.CaseClause), cond)
 	}
 	c.emit(")")
 }
@@ -655,11 +657,6 @@ func (c *Compiler) emitTypeSpec(node *ast.TypeSpec) {
 	c.emitType(node.Type)
 }
 
-// helper function
-func (c *Compiler) emitTypeSwitchCaseClause(node *ast.CaseClause) {
-	c.emitSwitchCaseClause(node, false)
-}
-
 func (c *Compiler) emitTypeSwitchStmt(node *ast.TypeSwitchStmt) {
 	c.emit("(type!")
 	if node.Init != nil {
@@ -670,7 +667,7 @@ func (c *Compiler) emitTypeSwitchStmt(node *ast.TypeSwitchStmt) {
 	c.emitStmt(node.Assign)
 	for _, stmt := range node.Body.List {
 		c.emit(" ")
-		c.emitTypeSwitchCaseClause(stmt.(*ast.CaseClause))
+		c.emitCaseClause(stmt.(*ast.CaseClause), false)
 	}
 	c.emit(")")
 }
