@@ -71,11 +71,11 @@ func (c *Compiler) Visit(node ast.Node) (w ast.Visitor) {
 	return c
 }
 
-func boBinaryOpToSchemeOp(name string) string {
+func goOpToSchemeOp(name string) string {
 	var table = map[string]string{
 		"!": "not",
 		"&": "bitwise-and",
-		"&&": "or",
+		"&&": "and",
 		"&=": "bitwise-and=",
 		"&^": "bitwise-but",
 		"&^=": "bitwise-but=",

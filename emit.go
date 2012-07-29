@@ -25,7 +25,7 @@ func (c *Compiler) emitArrayType(node *ast.ArrayType) {
 }
 
 func (c *Compiler) emitAssignStmt(node *ast.AssignStmt) {
-	c.emit("(%s ", node.Tok.String())
+	c.emit("(%s ", goOpToSchemeOp(node.Tok.String()))
 	if len(node.Lhs) == 1 {
 		c.emitExpr(node.Lhs[0])
 	} else {
@@ -58,7 +58,7 @@ func (c *Compiler) emitBasicLit(node *ast.BasicLit) {
 }
 
 func (c *Compiler) emitBinaryExpr(node *ast.BinaryExpr) {
-	c.emit("(%s ", boBinaryOpToSchemeOp(node.Op.String()))
+	c.emit("(%s ", goOpToSchemeOp(node.Op.String()))
 	c.emitExpr(node.X)
 	c.emit(" ")
 	c.emitExpr(node.Y)
@@ -66,6 +66,7 @@ func (c *Compiler) emitBinaryExpr(node *ast.BinaryExpr) {
 }
 
 func (c *Compiler) emitBlockStmt(node *ast.BlockStmt) {
+	if node.List == nil { return }
 	for _, stmt := range node.List {
 		c.emit(" ")
 		c.emitStmt(stmt)
@@ -83,22 +84,23 @@ func (c *Compiler) emitBranchStmt(node *ast.BranchStmt) {
 
 func (c *Compiler) emitCallExpr(node *ast.CallExpr) {
 	c.emit("(")
-	//printer.Fprint(c.wr, token.NewFileSet(), node)
+	if node.Ellipsis != 0 {
+		c.emit("apply... ")
+	}
 	c.emitExpr(node.Fun)
 	for _, arg := range node.Args {
 		c.emit(" ")
 		c.emitExpr(arg)
 	}
-	// TODO: Ellipsis
+	//if node.Ellipsis != 0 {
+	//	c.emit(" ...")
+	//}
 	c.emit(")")
 }
 
-func (c *Compiler) emitCaseClause(node *ast.CaseClause) {
-	c.emit("<case>")
-}
-
+// CaseClause
 // ChanDir
-// ChanType
+
 func (c *Compiler) emitChanType(node *ast.ChanType) {
 	c.emit("(chan")
 	switch node.Dir {
@@ -111,16 +113,12 @@ func (c *Compiler) emitChanType(node *ast.ChanType) {
 	c.emit(")")
 }
 
-func (c *Compiler) emitCommClause(node *ast.CommClause) {
-	c.emit("<comm>")
-}
+// CommClause
 
 func (c *Compiler) emitComment(node *ast.Comment) {
-	//c.emit("; <comment>\n")
 }
 
 func (c *Compiler) emitCommentGroup(node *ast.CommentGroup) {
-	//c.emit("; <comment>\n")
 }
 
 func (c *Compiler) emitCompositeLit(node *ast.CompositeLit) {
@@ -164,11 +162,11 @@ func (c *Compiler) emitExpr(node ast.Expr) {
 	case *ast.BasicLit:       c.emitBasicLit(a)
 	case *ast.CompositeLit:   c.emitCompositeLit(a)
 	case *ast.Ellipsis:       c.emitEllipsis(a)
+	case *ast.Ident:          c.emit(a.Name)
 
 	// Expr
 	case *ast.BinaryExpr:     c.emitBinaryExpr(a)
 	case *ast.CallExpr:       c.emitCallExpr(a)
-	case *ast.Ident:          c.emit(a.Name)
 	case *ast.IndexExpr:      c.emitIndexExpr(a)
 	case *ast.KeyValueExpr:   c.emitKeyValueExpr(a)
 	case *ast.ParenExpr:      c.emitExpr(a.X)
@@ -187,7 +185,7 @@ func (c *Compiler) emitExpr(node ast.Expr) {
 	case *ast.StructType:     c.emitStructType(a)
 
 	default:
-		c.emit("<expr>")
+		c.emit("<expr:%v>", node)
 	}
 }
 
@@ -224,7 +222,11 @@ func (c *Compiler) emitFile(node *ast.File) {
 func (c *Compiler) emitForStmt(node *ast.ForStmt) {
 	if node.Init == nil && node.Post == nil {
 		c.emit("(while ")
-		c.emitExpr(node.Cond)
+		if node.Cond == nil {
+			c.emit("#t")
+		} else {
+			c.emitExpr(node.Cond)
+		}
 		c.emit(" ")
 		c.emitBlockStmt(node.Body)
 		c.emit(")")
@@ -232,20 +234,37 @@ func (c *Compiler) emitForStmt(node *ast.ForStmt) {
 	}
 
 	c.emit("(for ")
-	c.emitStmt(node.Init)
+	if node.Init == nil {
+		c.emit("#f")
+	} else {
+		c.emitStmt(node.Init)
+	}
 	c.emit(" ")
-	c.emitExpr(node.Cond)
+	if node.Cond == nil {
+		c.emit("#t")
+	} else {
+		c.emitExpr(node.Cond)
+	}
 	c.emit(" ")
-	c.emitStmt(node.Post)
+	if node.Post == nil {
+		c.emit("#f")
+	} else {
+		c.emitStmt(node.Post)
+	}
 	c.emit(" ")
 	c.emitBlockStmt(node.Body)
 	c.emit(")")
 }
 
 func (c *Compiler) emitFuncDecl(node *ast.FuncDecl) {
-	//print("define-func\n")
 	// "(define-func (%s %s) %s)", name, type, body
-	c.emit("(define-func (%s", node.Name.Name)
+	if node.Recv == nil {
+		c.emit("(define-func (%s ", node.Name.Name)
+	} else {
+		c.emit("(define-func (")
+		c.emitFieldList(node.Recv)
+		c.emit(" %s ", node.Name.Name)
+	}
 	c.emitFuncType(node.Type)
 	c.emit(")")
 	c.emitBlockStmt(node.Body)
@@ -415,19 +434,21 @@ func (c *Compiler) emitMapType(node *ast.MapType) {
 // Node
 // ObjKind
 // Object
-
-func (c *Compiler) emitPackage(node *ast.Package) {
-	c.emit("<package>")
-}
-
+// Package
 // ParenExpr
 
 func (c *Compiler) emitRangeStmt(node *ast.RangeStmt) {
-	c.emit("(range (%s (", node.Tok.String())
-	c.emitExpr(node.Key)
+	c.emit("(range (%s ", node.Tok.String())
+	if node.Value == nil {
+		c.emitExpr(node.Key)
+	} else {
+		c.emit("(")
+		c.emitExpr(node.Key)
+		c.emit(" ")
+		c.emitExpr(node.Value)
+		c.emit(")")
+	}
 	c.emit(" ")
-	c.emitExpr(node.Value)
-	c.emit(") ")
 	c.emitExpr(node.X)
 	c.emit(")")
 	c.emitBlockStmt(node.Body)
@@ -446,14 +467,40 @@ func (c *Compiler) emitReturnStmt(node *ast.ReturnStmt) {
 
 // Scope
 
+// helper function
+func (c *Compiler) emitSelectCommClause(node *ast.CommClause) {
+	if node.Comm == nil {
+		c.emit("(else")
+	} else {
+		c.emit("(")
+		c.emitStmt(node.Comm)
+	}
+	if node.Body != nil {
+		for _, stmt := range node.Body {
+			c.emit(" ")
+			c.emitStmt(stmt)
+		}
+	}
+	c.emit(")")
+}
+
 func (c *Compiler) emitSelectStmt(node *ast.SelectStmt) {
-	c.emit("<select-stmt>")
+	c.emit("(comm!")
+	for _, stmt := range node.Body.List {
+		c.emit(" ")
+		c.emitSelectCommClause(stmt.(*ast.CommClause))
+	}
+	c.emit(")")
 }
 
 func (c *Compiler) emitSelectorExpr(node *ast.SelectorExpr) {
+	if id, ok := node.X.(*ast.Ident); ok {
+		c.emit("%s.%s", id.Name, node.Sel.Name)
+		return
+	}
 	c.emit("(dot ")
 	c.emitExpr(node.X)
-	c.emit(" %s)", node.Sel.String())
+	c.emit(" %s)", node.Sel.Name)
 }
 
 func (c *Compiler) emitSendStmt(node *ast.SendStmt) {
@@ -468,15 +515,32 @@ func (c *Compiler) emitSliceExpr(node *ast.SliceExpr) {
 	c.emit("(index ")
 	c.emitExpr(node.X)
 	c.emit(" ")
-	c.emitExpr(node.Low)
+	if node.Low == nil {
+		c.emit("#f")
+	} else {
+		c.emitExpr(node.Low)
+	}
 	c.emit(" ")
-	c.emitExpr(node.High)
+	if node.High == nil {
+		c.emit("#f")
+	} else {
+		c.emitExpr(node.High)
+	}
 	c.emit(")")
 }
 
 // Spec
 
 func (c *Compiler) emitStarExpr(node *ast.StarExpr) {
+	//if id, ok := node.X.(*ast.Ident); ok {
+	//	c.emit("*%s", id.Name)
+	//	return
+	//}
+	//if sel, ok := node.X.(*ast.SelectorExpr); ok {
+	//	c.emit("*")
+	//	c.emitSelectorExpr(sel)
+	//	return
+	//}
 	c.emit("(ptr ")
 	c.emitType(node.X)
 	c.emit(")")
@@ -484,6 +548,8 @@ func (c *Compiler) emitStarExpr(node *ast.StarExpr) {
 
 func (c *Compiler) emitStmt(node ast.Stmt) {
 	switch a := node.(type) {
+
+	// Stmt
 	case *ast.AssignStmt:     c.emitAssignStmt(a)
 	case *ast.BlockStmt:      c.emitBlockStmt(a)
 	case *ast.BranchStmt:     c.emitBranchStmt(a)
@@ -501,8 +567,10 @@ func (c *Compiler) emitStmt(node ast.Stmt) {
 	case *ast.SelectStmt:     c.emitSelectStmt(a)
 	case *ast.SendStmt:       c.emitSendStmt(a)
 	case *ast.SwitchStmt:     c.emitSwitchStmt(a)
+	case *ast.TypeSwitchStmt: c.emitTypeSwitchStmt(a)
+
 	default:
-		c.emit("<stmt>%v", node)
+		c.emit("<stmt:%v>", node)
 	}
 }
 
@@ -512,29 +580,72 @@ func (c *Compiler) emitStructType(node *ast.StructType) {
 	c.emit(")")
 }
 
+// helper function
+func (c *Compiler) emitSwitchCaseClause(node *ast.CaseClause, cond bool) {
+	if node.List == nil || len(node.List) == 0 {
+		c.emit("(else ")
+		for _, stmt := range node.Body {
+			c.emit(" ")
+			c.emitStmt(stmt)
+		}
+		c.emit(")")
+		return
+	}
+	c.emit("(")
+	if cond {
+		c.emitExpr(node.List[0])
+	} else {
+		sep := "("
+		for _, expr := range node.List {
+			c.emit(sep)
+			c.emitExpr(expr)
+			sep = " "
+		}
+		c.emit(")")
+	} 
+	c.emit(" ")
+	for _, stmt := range node.Body {
+		c.emit(" ")
+		c.emitStmt(stmt)
+	}
+	c.emit(")")
+}
+
 func (c *Compiler) emitSwitchStmt(node *ast.SwitchStmt) {
-	c.emit("<switch-stmt>")
+	cond := node.Tag == nil
+	if cond {
+		c.emit("(cond!")
+	} else {
+		c.emit("(case!")
+	}
+	if node.Init != nil {
+		c.emit("* ")
+		c.emitStmt(node.Init)
+	}
+	if !cond {
+		c.emit(" ")
+		c.emitExpr(node.Tag)
+	}
+	for _, stmt := range node.Body.List {
+		c.emit(" ")
+		c.emitSwitchCaseClause(stmt.(*ast.CaseClause), cond)
+	}
+	c.emit(")")
 }
 
 func (c *Compiler) emitType(node ast.Expr) {
 	c.emitExpr(node)
-	//switch a := node.(type) {
-	//case *ast.Ident:
-	//	c.emit(a.Name)
-	//case *ast.InterfaceType:
-	//	c.emitInterfaceType(a)
-	//case *ast.StarExpr:
-	//	c.emitStarExpr(a)
-	//default:
-	//	c.emit("<type>")
-	//}
 }
 
 func (c *Compiler) emitTypeAssertExpr(node *ast.TypeAssertExpr) {
 	c.emit("(as ")
 	c.emitExpr(node.X)
 	c.emit(" ")
-	c.emitType(node.Type)
+	if node.Type == nil {
+		c.emit("type")
+	} else {
+		c.emitType(node.Type)
+	}
 	c.emit(")")
 }
 
@@ -544,12 +655,28 @@ func (c *Compiler) emitTypeSpec(node *ast.TypeSpec) {
 	c.emitType(node.Type)
 }
 
-func (c *Compiler) emitTypeSwitchStmt(node ast.TypeSwitchStmt) {
-	c.emit("<type-switch-stmt>")
+// helper function
+func (c *Compiler) emitTypeSwitchCaseClause(node *ast.CaseClause) {
+	c.emitSwitchCaseClause(node, false)
+}
+
+func (c *Compiler) emitTypeSwitchStmt(node *ast.TypeSwitchStmt) {
+	c.emit("(type!")
+	if node.Init != nil {
+		c.emit("* ")
+		c.emitStmt(node.Init)
+	}
+	c.emit(" ")
+	c.emitStmt(node.Assign)
+	for _, stmt := range node.Body.List {
+		c.emit(" ")
+		c.emitTypeSwitchCaseClause(stmt.(*ast.CaseClause))
+	}
+	c.emit(")")
 }
 
 func (c *Compiler) emitUnaryExpr(node *ast.UnaryExpr) {
-	c.emit("(%s ", node.Op.String())
+	c.emit("(%s ", goOpToSchemeOp(node.Op.String()))
 	c.emitExpr(node.X)
 	c.emit(")")
 }
