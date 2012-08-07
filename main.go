@@ -3,34 +3,45 @@ package main
 
 import (
 //	"bytes"
-	"fmt"
+//	"fmt"
+	"flag"
 	"os"
 	"os/exec"
 	"runtime/pprof"
 )
 
-const debug = false
+var debug = flag.Bool("d", false, "print debugging info")
+var raw = flag.Bool("r", false, "print unformatted output")
+var inputname = flag.String("i", "-", "input filename")
+var outputname = flag.String("o", "-", "output filename")
 
-func usage() {
-}
-
-func compile(filename string) {
+func compile() {
 	// open input file
-	rd, err := os.Open(filename)
+	rd, err := func()(file *os.File, err error){
+		if *inputname == "-" {
+			return os.Stdin, nil
+		}
+		return os.Open(*inputname)
+	}()
 	if err != nil {
 		panic(err)
 	}
 
 	// open output file
-	//wr, err := os.Create(filename + "s")
-	//if err != nil {
-	//	  panic(err)
-	//}
+	wr, err := func()(file *os.File, err error){
+		if *outputname == "-" {
+			return os.Stdout, nil
+		}
+		return os.Open(*outputname)
+	}()
+	if err != nil {
+		panic(err)
+	}
 
 	// find guile
 	guile, err := exec.LookPath("guile")
-	if err != nil {
-		NewCompiler().Compile(rd, os.Stdout)
+	if err != nil || *raw {
+		NewCompiler().Compile(rd, wr)
 		rd.Close()
 		return
 	}
@@ -57,21 +68,25 @@ func compile(filename string) {
 }
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Errorf("ERROR: you must give exactly one command-line argument.")
-		usage()
-	}
-	filename := os.Args[1]
+	flag.Parse()
 
-	if debug {
+	switch len(flag.Args()) {
+	case 1:
+		*inputname = flag.Arg(0)
+	case 2:
+		*inputname = flag.Arg(0)
+		*outputname = flag.Arg(1)
+	}
+
+	if *debug {
 		out, err := os.Create("profile")
 		if err != nil { panic(err) }
 		err = pprof.StartCPUProfile(out)
 		if err != nil { panic(err) }
-		compile(filename)
+		compile()
 		pprof.StopCPUProfile()
 		out.Close()
 	} else {
-		compile(filename)
+		compile()
 	}
 }

@@ -9,6 +9,10 @@ import (
 	"strings"
 )
 
+type Syncer interface {
+	Sync() error
+}
+
 type Buffer struct {
 }
 
@@ -59,21 +63,15 @@ func (c *Compiler) compileString(input string) error {
 }
 
 func (c *Compiler) Visit(node ast.Node) (w ast.Visitor) {
-	//fmt.Printf("\n- %v\n", node)
-	switch a := node.(type) {
-	case *ast.GenDecl:
-		c.emitGenDecl(a)
-		return nil
-	case *ast.FuncDecl:
-		c.emitFuncDecl(a)
+	if a, ok := node.(ast.Decl); ok {
+		c.emitDecl(a)
 		return nil
 	}
 	return c
 }
 
-func goOpToSchemeOp(name string) string {
+func goBinaryOpToSchemeOp(name string) string {
 	var table = map[string]string{
-		"!": "not",
 		"&": "bitwise-and",
 		"&&": "and",
 		"&=": "bitwise-and=",
@@ -91,13 +89,129 @@ func goOpToSchemeOp(name string) string {
 	return name
 }
 
+func goUnaryOpToSchemeOp(name string) string {
+	var table = map[string]string{
+		"&": "adr",
+		"^": "bitwise-not",
+		"!": "not",
+		"*": "ptr",
+	}
+	if table[name] != "" {
+		return table[name]
+	}
+	return name
+}
+
+func goIdToSchemeId(name string) string {
+	var table = map[string]string{
+		// types
+		"bool": "&bool",
+		"byte": "&byte",
+		"complex64": "&complex64",
+		"complex128": "&complex128",
+		"error": "&error",
+		"float32": "&float32",
+		"float64": "&float64",
+		"int": "&int",
+		"int8": "&int8",
+		"int16": "&int16",
+		"int32": "&int32",
+		"int64": "&int64",
+		"rune": "&rune",
+		"string": "&imm-string",
+		"uint": "&uint",
+		"uint8": "&uint8",
+		"uint16": "&uint16",
+		"uint32": "&uint32",
+		"uint64": "&uint64",
+		"uintptr": "&uintptr",
+		// objects
+		"true": "#t",
+		"false": "#f",
+		"nil": "%nil",
+	}
+	if table[name] != "" {
+		return table[name]
+	}
+	return UnmangleName(name)
+}
+
+func goCharToSchemeChar(node *ast.BasicLit) string {
+	buf := []rune(node.Value)
+	if buf[1] == '\\' {
+		switch buf[2] {
+		case ' ': return "space"
+		//case '0': return "nul"
+		//case 'a': return "alert"
+		//case 'b': return "backspace"
+		//case 'f': return "formfeed"
+		case 'a': return "bel"
+		case 'b': return "backspace"
+		case 'f': return "page"
+		case 'n': return "linefeed"
+		case 'r': return "return"
+		case 't': return "tab"
+		case 'v': return "vtab"
+		case 'U':
+		case 'u':
+		case 'x':
+		}
+		return string(buf[2:len(buf)-1])
+	}
+	return string(buf[1:len(buf)-1])
+}
+
 func goStringToSchemeString(node *ast.BasicLit) string {
+	if []byte(node.Value)[0] == '`' {
+		v1 := node.Value
+		v2 := strings.Replace(v1, "\"", "\\\"", -1)
+		v3 := strings.Replace(v2, "`", "\"", -1)
+		return v3
+	}
 	//internalBuf := make([]byte, 1024)
 	//buf := bytes.NewBuffer(internalBuf)
 	//err := printer.Fprint(buf, token.NewFileSet(), node)
 	//if err != nil {
 	//	panic(err)
 	//}
-	//return strings.Replace(node.Value, "\n", "\\n", 1)
 	return node.Value
+}
+
+func MangleName(name string) string {
+    const table = "!\"#$%&'*+,-./:;<=>?@\\^`|~Z"
+    var out = []byte{}
+    var work = []byte(name)
+    for i := 0; i < len(work); i++ {
+        ch := work[i]
+        ix := strings.Index(table, string(ch))
+        if ix != -1 {
+            out = append(out, 'Z', 'A'+byte(ix))
+        } else {
+            out = append(out, ch)
+        }
+    }
+    return string(out)
+}
+
+func UnmangleName(mangled string) string {
+    const table = "!\"#$%&'*+,-./:;<=>?@\\^`|~Z"
+    var out = []byte{}
+    var work = []byte(mangled)
+    for i := 0; i < len(work); i++ {
+        ch := work[i]
+        if ch == 'Z' {
+            i++
+            ch := work[i]
+			ix := ch - 'A'
+			if 0 <= ix && ix < byte(len(table)) {
+				out = append(out, table[ch-'A'])
+			} else {
+				out = append(out, 'Z')
+				out = append(out, ch)
+			}
+        } else {
+            out = append(out, ch)
+        }
+    }
+    return string(out)
 }

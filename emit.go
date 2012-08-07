@@ -10,6 +10,10 @@ func (c *Compiler) emit(format string, params ...interface{}) {
 	fmt.Fprintf(c.wr, format, params...)
 }
 
+func (c *Compiler) emitRaw(output string) {
+	fmt.Fprint(c.wr, output)
+}
+
 func (c *Compiler) emitArrayType(node *ast.ArrayType) {
 	if node.Len == nil {
 		c.emit("(slice ")
@@ -25,18 +29,25 @@ func (c *Compiler) emitArrayType(node *ast.ArrayType) {
 }
 
 func (c *Compiler) emitAssignStmt(node *ast.AssignStmt) {
-	c.emit("(%s ", goOpToSchemeOp(node.Tok.String()))
+	c.emit("(%s ", goBinaryOpToSchemeOp(node.Tok.String()))
+	sep := "("
 	if len(node.Lhs) == 1 {
-		c.emitExpr(node.Lhs[0])
-	} else {
-		sep := "("
-		for _, expr := range node.Lhs {
-			c.emit(sep)
-			c.emitExpr(expr)
-			sep = " "
+		switch a := node.Lhs[0].(type) {
+		case *ast.Ident:
+			c.emitIdent(a)
+			goto right
+		case *ast.SelectorExpr:
+			c.emitSelectorExpr(a)
+			goto right
 		}
-		c.emit(")")
 	}
+	for _, expr := range node.Lhs {
+		c.emit(sep)
+		c.emitExpr(expr)
+		sep = " "
+	}
+	c.emit(")")
+right:
 	for _, expr := range node.Rhs {
 		c.emit(" ")
 		c.emitExpr(expr)
@@ -47,18 +58,18 @@ func (c *Compiler) emitAssignStmt(node *ast.AssignStmt) {
 func (c *Compiler) emitBasicLit(node *ast.BasicLit) {
 	switch node.Kind {
 	case token.CHAR:
-		c.emit("#\\%s", []byte(node.Value)[1:2])
+		c.emit("#\\%s", goCharToSchemeChar(node))
 	case token.STRING:
 		// TODO newlines
-		c.wr.Write([]byte(goStringToSchemeString(node)))
+		c.emitRaw(goStringToSchemeString(node))
 	default:
 		// avoid printf's (MISSING):
-		fmt.Fprint(c.wr, node.Value)
+		c.emitRaw(goStringToSchemeString(node))
 	}
 }
 
 func (c *Compiler) emitBinaryExpr(node *ast.BinaryExpr) {
-	c.emit("(%s ", goOpToSchemeOp(node.Op.String()))
+	c.emit("(%s ", goBinaryOpToSchemeOp(node.Op.String()))
 	c.emitExpr(node.X)
 	c.emit(" ")
 	c.emitExpr(node.Y)
@@ -138,6 +149,7 @@ func (c *Compiler) emitChanType(node *ast.ChanType) {
 	case ast.SEND:
 		c.emit("<-!")
 	}
+	c.emit(" ")
 	c.emitType(node.Value)
 	c.emit(")")
 }
@@ -192,15 +204,20 @@ func (c *Compiler) emitDeferStmt(node *ast.DeferStmt) {
 }
 
 func (c *Compiler) emitEmptyStmt(node *ast.EmptyStmt) {
-	c.emit("(void)")
+	c.emit("#f")
 }
 
 func (c *Compiler) emitExpr(node ast.Expr) {
+	if node == nil {
+
+		return
+	}
 	switch a := node.(type) {
 	case *ast.BasicLit:       c.emitBasicLit(a)
 	case *ast.CompositeLit:   c.emitCompositeLit(a)
 	case *ast.Ellipsis:       c.emitExpr(a.Elt)
-	case *ast.Ident:          c.emit(a.Name)
+	case *ast.FuncLit:        c.emitFuncLit(a)
+	case *ast.Ident:          c.emitIdent(a)
 
 	// Expr
 	case *ast.BinaryExpr:     c.emitBinaryExpr(a)
@@ -236,7 +253,7 @@ func (c *Compiler) emitField(node *ast.Field) {
 	}
 	c.emit("#(")
 	for _, name := range node.Names {
-		c.emit("%s ", name.String())
+		c.emit("%s ", goIdToSchemeId(name.Name))
 	}
 	c.emitType(node.Type)
 	c.emit(")")
@@ -252,8 +269,14 @@ func (c *Compiler) emitFieldList(node *ast.FieldList) {
 }
 
 func (c *Compiler) emitFile(node *ast.File) {
-	c.emit("(package %s ", node.Name.Name)
-	ast.Walk(c, node)
+	c.emit("(package ")
+	c.emitIdent(node.Name)
+	//c.emit(" ")
+	//c.emitImports(node.Imports) // this is in .Decls
+	for _, decl := range node.Decls {
+		c.emit(" ")
+		c.emitDecl(decl)
+	}
 	c.emit(")")
 }
 
@@ -304,40 +327,58 @@ func (c *Compiler) emitFuncDecl(node *ast.FuncDecl) {
 		}
 	}
 	// "(define-func (%s %s) %s)", name, type, body
-	c.emit("(define-func")
+	c.emit("(func")
 	if ellipsis {
 		c.emit("...")
 	}
-	if node.Recv == nil {
-		c.emit(" (%s ", node.Name.Name)
-	} else {
-		c.emit(" (")
+	if node.Recv != nil {
+		c.emit(" ")
 		c.emitFieldList(node.Recv)
-		c.emit(" %s ", node.Name.Name)
 	}
-	c.emitFuncType(node.Type)
-	c.emit(")")
+	c.emit(" ")
+	c.emitIdent(node.Name)
+	c.emit(" ")
+	c.emitFuncTypes(node.Type, false)
+	c.emit(" ")
 	c.emitBlockStmt(node.Body)
 	c.emit(")")
 }
 
-// FuncLit
+func (c *Compiler) emitFuncLit(node *ast.FuncLit) {
+	c.emit("(func ")
+	c.emitFuncTypes(node.Type, false)
+	c.emit(" ")
+	c.emitBlockStmt(node.Body)
+	c.emit(")")
+}
 
 func (c *Compiler) emitFuncType(node *ast.FuncType) {
+	c.emitFuncTypes(node, true)
+}
+func (c *Compiler) emitFuncTypes(node *ast.FuncType, external bool) {
 	// It is the responsibility of the caller to
 	// write "func " or whatever is appropriate
 	// because we have no idea at the point if this
 	// is being called from a Decl/Stmt/Expr, etc.
+	if external {
+		c.emit("(func ")
+	}
+	c.emit("(")
 	c.emitFieldList(node.Params)
+	c.emit(")")
 	c.emitFuncResults(node.Results)
+	if external {
+		c.emit(")")
+	}
 }
 
 func (c *Compiler) emitFuncResults(node *ast.FieldList) {
 	c.emit(" ")
 	if node == nil || len(node.List) == 0 {
-		c.emit("(void)")
+		c.emit("&void")
 		return
 	}
+
 	if len(node.List) == 1 {
 		c.emitField(node.List[0])
 		return
@@ -366,17 +407,12 @@ func (c *Compiler) emitGenDecl(node *ast.GenDecl) {
 		// "(import \"%s\")", path
 		// "(import (as %s \"%s\"))", name, path
 		// "(import (dot \"%s\"))", path
-		c.emit("(import")
-		for _, spec := range node.Specs {
-			c.emit(" ")
-			c.emitImportSpec(spec.(*ast.ImportSpec))
-		}
-		c.emit(")")
+		c.emitImports(node.Specs)
 		return
 	}
 
 	// otherwise
-	c.emit("(define-%s", node.Tok.String())
+	c.emit("(%s", node.Tok.String())
 	switch node.Tok {
 	case token.TYPE:
 		// "(define-type %s %s)", name, type
@@ -408,28 +444,78 @@ func (c *Compiler) emitGoStmt(node *ast.GoStmt) {
 	c.emit(")")
 }
 
-// Ident
+func (c *Compiler) emitIdent(node *ast.Ident) {
+	c.emitRaw(goIdToSchemeId(node.Name))
+}
 
 func (c *Compiler) emitIfStmt(node *ast.IfStmt) {
-	c.emit("(when")
+	unless := false
+	if un, ok := node.Cond.(*ast.UnaryExpr); ok {
+		if un.Op.String() == "!" {
+			unless = true
+		}
+	}
+	c.emit("(")
+	if unless {
+		c.emit("unless")
+	} else {
+		c.emit("when")
+	}
 	if node.Init != nil {
 		c.emit("* ")
 		c.emitStmt(node.Init)
 	}
 	c.emit(" ")
-	c.emitExpr(node.Cond)
+	if unless {
+		c.emitExpr(node.Cond.(*ast.UnaryExpr).X)
+	} else {
+		c.emitExpr(node.Cond)
+	}
 	c.emit(" ")
 	c.emitBlockStmt(node.Body)
+	if node.Else != nil {
+		c.emit("(else ")
+		switch a := node.Else.(type) {
+		case *ast.BlockStmt:
+			c.emitBlockStmt(a)
+		default:
+			c.emitStmt(node.Else)
+		}
+		c.emit(")")
+	}
 	c.emit(")")
 	// TODO: else
 }
 
+func (c *Compiler) emitImports(any interface{}) {
+	c.emit("(import")
+	switch specs := any.(type) {
+
+	// from (*ast.GenDecl).Specs
+	case []ast.Spec:
+		for _, spec := range specs {
+			c.emit(" ")
+			c.emitImportSpec(spec.(*ast.ImportSpec))
+		}
+
+	// from (*ast.File).Imports
+	case []*ast.ImportSpec:
+		for _, spec := range specs {
+			c.emit(" ")
+			c.emitImportSpec(spec)
+		}
+	}
+	c.emit(")")
+}
+
 func (c *Compiler) emitImportSpec(node *ast.ImportSpec) {
 	if node.Name != nil {
-		if node.Name.String() == "." {
+		if node.Name.Name == "." {
 			c.emit("(dot ")
 		} else {
-			c.emit("(as %s ", node.Name.String())
+			c.emit("(as ")
+			c.emitIdent(node.Name)
+			c.emit(" ")
 		}
 		c.emitBasicLit(node.Path)
 		c.emit(")")
@@ -454,16 +540,46 @@ func (c *Compiler) emitIndexExpr(node *ast.IndexExpr) {
 	c.emit(")")
 }
 
+//func (c *Compiler) emitInterfaceMethod(node *ast.Field) {
+//	c.emitField(node)
+//}
+//func (c *Compiler) emitInterfaceMethodList(node *ast.FieldList) {
+//	for _, field := range node.List {
+//		c.emit(" ")
+//		c.emitInterfaceMethod(field)
+//	}
+//}
+
 func (c *Compiler) emitInterfaceType(node *ast.InterfaceType) {
 	c.emit("(interface ")
-	// TODO: check if this works!
 	c.emitFieldList(node.Methods)
 	c.emit(")")
 }
 
 func (c *Compiler) emitKeyValueExpr(node *ast.KeyValueExpr) {
-	c.emit("#:%s ", node.Key.(*ast.Ident).Name)
+	c.emit("(: ")
+	if key, ok := node.Key.(*ast.BasicLit); ok {
+		c.emitBasicLit(key)
+		c.emit(" ")
+	} else if key, ok := node.Key.(*ast.Ident); ok {
+		c.emit("%s ", goIdToSchemeId(key.Name))
+	} else {
+		panic("emitKeyValueExpr: expected string or identifier")
+	}
 	c.emitExpr(node.Value)
+	c.emit(")")
+	//return
+	//if key, ok := node.Key.(*ast.BasicLit); ok {
+	//	c.emit("(: %s ", key.Value)
+	//	c.emitExpr(node.Value)
+	//	c.emit(")")
+	//	return
+	//} else if key, ok := node.Key.(*ast.Ident); ok {
+	//	c.emit("#:%s ", key.Name)
+	//} else {
+	//	panic("emitKeyValueExpr: expected string or identifier")
+	//}
+	//c.emitExpr(node.Value)
 }
 
 func (c *Compiler) emitLabeledStmt(node *ast.LabeledStmt) {
@@ -528,12 +644,12 @@ func (c *Compiler) emitSelectStmt(node *ast.SelectStmt) {
 
 func (c *Compiler) emitSelectorExpr(node *ast.SelectorExpr) {
 	if id, ok := node.X.(*ast.Ident); ok {
-		c.emit("%s.%s", id.Name, node.Sel.Name)
+		c.emit("%s.%s", goIdToSchemeId(id.Name), goIdToSchemeId(node.Sel.Name))
 		return
 	}
 	c.emit("(dot ")
 	c.emitExpr(node.X)
-	c.emit(" %s)", node.Sel.Name)
+	c.emit(" %s)", goIdToSchemeId(node.Sel.Name))
 }
 
 func (c *Compiler) emitSendStmt(node *ast.SendStmt) {
@@ -636,6 +752,11 @@ func (c *Compiler) emitSwitchStmt(node *ast.SwitchStmt) {
 }
 
 func (c *Compiler) emitType(node ast.Expr) {
+	if id, ok := node.(*ast.Ident); ok {
+		c.emitRaw(goIdToSchemeId(id.Name))
+		//c.emit(id)
+		return
+	}
 	c.emitExpr(node)
 }
 
@@ -652,7 +773,7 @@ func (c *Compiler) emitTypeAssertExpr(node *ast.TypeAssertExpr) {
 }
 
 func (c *Compiler) emitTypeSpec(node *ast.TypeSpec) {
-	c.emit(node.Name.Name)
+	c.emitIdent(node.Name)
 	c.emit(" ")
 	c.emitType(node.Type)
 }
@@ -673,7 +794,7 @@ func (c *Compiler) emitTypeSwitchStmt(node *ast.TypeSwitchStmt) {
 }
 
 func (c *Compiler) emitUnaryExpr(node *ast.UnaryExpr) {
-	c.emit("(%s ", goOpToSchemeOp(node.Op.String()))
+	c.emit("(%s ", goUnaryOpToSchemeOp(node.Op.String()))
 	c.emitExpr(node.X)
 	c.emit(")")
 }
@@ -683,7 +804,7 @@ func (c *Compiler) emitValueNames(ids []*ast.Ident) {
 	buffer := []byte{}
 	for _, id := range ids {
 		buffer = append(buffer, ' ')
-		buffer = append(buffer, id.Name...)
+		buffer = append(buffer, goIdToSchemeId(id.Name)...)
 	}
 	if len(ids) == 1 {
 		c.emit("%s", string(buffer[1:]))
@@ -695,7 +816,7 @@ func (c *Compiler) emitValueNames(ids []*ast.Ident) {
 func (c *Compiler) emitValueTypedNames(ids []*ast.Ident, t ast.Expr) {
 	buffer := []byte{}
 	for _, id := range ids {
-		buffer = append(buffer, id.Name...)
+		buffer = append(buffer, goIdToSchemeId(id.Name)...)
 		buffer = append(buffer, ' ')
 	}
 	c.emit("#(%s", string(buffer))
@@ -719,22 +840,20 @@ func (c *Compiler) emitValueSpec(node *ast.ValueSpec) {
 			// "(define-var #(%s %s))", name(s), type
 			c.emitValueTypedNames(node.Names, node.Type)
 		}
-	} else {
-		if node.Values != nil {
-			// "(define-const (= %s %s))", name, value
-			// "(define-var (= %s %s))", name, value
-			// "(define-var (= (%s) %s))", name(s), value(s)
-			c.emit("(= ")
-			c.emitValueNames(node.Names)
-			for _, arg := range node.Values {
-				c.emit(" ")
-				c.emitExpr(arg)
-			}
-			c.emit(")")
-		} else {
-			// "(define-const %s)", name
-			c.emitValueNames(node.Names)
+	} else if node.Values != nil {
+		// "(define-const (= %s %s))", name, value
+		// "(define-var (= %s %s))", name, value
+		// "(define-var (= (%s) %s))", name(s), value(s)
+		c.emit("(= ")
+		c.emitValueNames(node.Names)
+		for _, arg := range node.Values {
+			c.emit(" ")
+			c.emitExpr(arg)
 		}
+		c.emit(")")
+	} else {
+		// "(define-const %s)", name
+		c.emitValueNames(node.Names)
 	}
 }
 
